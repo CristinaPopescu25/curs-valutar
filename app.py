@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -243,16 +244,66 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+def history_chart(series: list[tuple[str, float]], target_ccy: str) -> alt.Chart:
+    """Grafic de tip linie, zoomat pe date, cu etichete în format românesc."""
+    frame = pd.DataFrame(
+        {
+            "day": pd.to_datetime([day for day, _ in series]),
+            "rate": [value for _, value in series],
+            "info": [f"{day} · {money(value)} {target_ccy}" for day, value in series],
+        }
+    )
+    low, high = frame["rate"].min(), frame["rate"].max()
+    padding = max((high - low) * 0.18, high * 0.0004)
+    return (
+        alt.Chart(frame)
+        .mark_line(
+            color="#f28b82",
+            strokeWidth=2,
+            interpolate="monotone",
+            point=alt.OverlayMarkDef(color="#f28b82", size=30, filled=True),
+        )
+        .encode(
+            x=alt.X(
+                "day:T",
+                title=None,
+                axis=alt.Axis(
+                    labelExpr="lower(timeFormat(datum.value, '%d %b')) + '.'",
+                    labelColor="#9aa0aa",
+                    labelFontSize=11,
+                    labelPadding=8,
+                    tickColor="#3a3e45",
+                    domainColor="#3a3e45",
+                    grid=False,
+                ),
+            ),
+            y=alt.Y(
+                "rate:Q",
+                title=None,
+                scale=alt.Scale(domain=[low - padding, high + padding], zero=False),
+                axis=alt.Axis(
+                    labelExpr="replace(format(datum.value, '.3f'), '.', ',')",
+                    labelColor="#9aa0aa",
+                    labelFontSize=11,
+                    labelPadding=8,
+                    gridColor="#2f3237",
+                    domain=False,
+                    ticks=False,
+                ),
+            ),
+            tooltip=alt.Tooltip("info:N", title="Curs"),
+        )
+        .properties(height=210)
+        .configure(background="#22242a")
+        .configure_view(stroke=None, fill="#22242a")
+    )
+
+
 st.markdown('<div class="section-title">Evoluția cursului</div>', unsafe_allow_html=True)
 series = history_series(table, source_ccy, target_ccy)
 with st.container(border=True):
     if len(series) >= 2:
-        frame = pd.Series(
-            [value for _, value in series],
-            index=pd.to_datetime([day for day, _ in series]),
-            name=f"1 {source_ccy} = {target_ccy}",
-        )
-        st.area_chart(frame, width="stretch", height=210)
+        st.altair_chart(history_chart(series, target_ccy), width="stretch")
         st.caption(f"1 {source_ccy} în {target_ccy} · ultimele {len(series)} zile · {table.source}")
     else:
         st.info("Nu sunt suficiente date istorice pentru această pereche de valute.")
