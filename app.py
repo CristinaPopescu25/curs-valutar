@@ -157,10 +157,3 @@ st.caption(
     "alte cursuri în tranzacțiile reale."
 )
 st.markdown(f"[Sursa oficială]({table.url}) · [BNR](https://www.bnr.ro/) · [BCE]({ECB_REFERENCE_URL})")
-
-with st.expander("📱  Cum îl folosesc pe telefon"):
-    st.markdown(
-        "1. Deschide linkul aplicației în Chrome (Android) sau Safari (iPhone).\n"
-        "2. Din meniul browserului alege **Add to Home Screen** / **Adaugă pe ecranul de start**.\n"
-        "3. Ulterior, aplicația se deschide ca un icon pe telefon, direct în browser."
-    )
