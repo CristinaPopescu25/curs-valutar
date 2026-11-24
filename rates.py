@@ -1,7 +1,7 @@
 """Preluarea cursurilor oficiale și logica de conversie.
 
 Surse utilizate:
-    * BNR (Banca Națională a României) - fișierul XML public de pe curs.bnr.ro.
+    * BNR (Banca Națională a României) - fișierele XML publice de pe curs.bnr.ro.
     * BCE (Banca Centrală Europeană) - cursurile de referință EUR, prin API-ul
       Frankfurter (care republicează datele oficiale BCE).
 
@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 import requests
 
 BNR_URL = "https://curs.bnr.ro/nbrfxrates.xml"
+BNR_HISTORY_URL = "https://curs.bnr.ro/nbrfxrates10days.xml"
 ECB_API_URL = "https://api.frankfurter.app/latest"
+ECB_TIMESERIES_URL = "https://api.frankfurter.app"
 ECB_REFERENCE_URL = (
     "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/"
     "euro_reference_exchange_rates/html/index.en.html"
@@ -77,20 +80,22 @@ def _to_float(text: str | None) -> float:
     return float((text or "").strip().replace(",", "."))
 
 
-def parse_bnr_xml(payload: bytes | str) -> RateTable:
-    """Parsează feed-ul XML oficial BNR.
-
-    BNR exprimă cursul ca „RON pentru `multiplier` unități”; valoarea este
-    împărțită la multiplier pentru a obține „RON pentru 1 unitate”.
-    """
+def _xml_root(payload: bytes | str) -> ET.Element:
     if isinstance(payload, bytes):
         payload = payload.decode("utf-8-sig")
-    root = ET.fromstring(payload)
+    return ET.fromstring(payload)
+
+
+def _bnr_cubes(payload: bytes | str) -> list[ET.Element]:
+    root = _xml_root(payload)
     cubes = [node for node in root.iter() if _local_name(node.tag) == "Cube" and node.get("date")]
     if not cubes:
         raise ValueError("Feed-ul BNR nu conține cursuri (răspuns neașteptat).")
+    return cubes
 
-    cube = cubes[0]  # în feed-urile cu mai multe zile, prima este cea mai recentă
+
+def _rates_from_cube(cube: ET.Element) -> dict[str, float]:
+    """BNR exprimă cursul ca „RON pentru `multiplier` unități”."""
     rates: dict[str, float] = {}
     for node in cube:
         if _local_name(node.tag) != "Rate":
@@ -105,11 +110,31 @@ def parse_bnr_xml(payload: bytes | str) -> RateTable:
             raise ValueError(f"Valoare invalidă pentru {code} în feed-ul BNR.") from exc
         if value > 0 and multiplier > 0:
             rates[code] = value / multiplier
-
     if not rates:
         raise ValueError("Feed-ul BNR nu conține cursuri valide.")
     rates["RON"] = 1.0
-    return RateTable(source="BNR", date=cube.attrib["date"], base="RON", rates=rates, url=BNR_URL)
+    return rates
+
+
+def parse_bnr_xml(payload: bytes | str) -> RateTable:
+    """Parsează ultimul curs oficial BNR."""
+    cube = _bnr_cubes(payload)[0]  # în feed-urile cu mai multe zile, prima e cea mai recentă
+    return RateTable(
+        source="BNR",
+        date=cube.attrib["date"],
+        base="RON",
+        rates=_rates_from_cube(cube),
+        url=BNR_URL,
+    )
+
+
+def parse_bnr_history(payload: bytes | str) -> list[RateTable]:
+    """Parsează ultimele 10 zile bancare publicate de BNR."""
+    tables = [
+        RateTable("BNR", cube.attrib["date"], "RON", _rates_from_cube(cube), BNR_HISTORY_URL)
+        for cube in _bnr_cubes(payload)
+    ]
+    return sorted(tables, key=lambda table: table.date)
 
 
 def fetch_bnr() -> RateTable:
@@ -119,10 +144,17 @@ def fetch_bnr() -> RateTable:
     return parse_bnr_xml(response.content)
 
 
+def fetch_bnr_history() -> list[RateTable]:
+    """Descarcă ultimele 10 zile bancare de cursuri BNR."""
+    response = requests.get(BNR_HISTORY_URL, timeout=REQUEST_TIMEOUT, headers=_HEADERS)
+    response.raise_for_status()
+    return parse_bnr_history(response.content)
+
+
 def parse_ecb_payload(data: dict) -> RateTable:
     """Convertește răspunsul Frankfurter (bază EUR) în RateTable."""
     try:
-        date = str(data["date"])
+        date_value = str(data["date"])
         raw_rates = dict(data["rates"])
     except (KeyError, TypeError) as exc:
         raise ValueError("Răspunsul BCE/Frankfurter este invalid.") from exc
@@ -137,7 +169,7 @@ def parse_ecb_payload(data: dict) -> RateTable:
         if number > 0:
             rates[code.upper()] = 1.0 / number
 
-    return RateTable(source="BCE", date=date, base="EUR", rates=rates, url=ECB_REFERENCE_URL)
+    return RateTable(source="BCE", date=date_value, base="EUR", rates=rates, url=ECB_REFERENCE_URL)
 
 
 def fetch_ecb() -> RateTable:
@@ -150,3 +182,36 @@ def fetch_ecb() -> RateTable:
     )
     response.raise_for_status()
     return parse_ecb_payload(response.json())
+
+
+def parse_ecb_history(data: dict, target: str) -> list[tuple[str, float]]:
+    """Convertește seria temporală Frankfurter în perechi (dată, curs)."""
+    code = target.upper()
+    raw = data.get("rates", {})
+    if not isinstance(raw, dict):
+        raise ValueError("Răspunsul istoric BCE/Frankfurter este invalid.")
+    series: list[tuple[str, float]] = []
+    for day, values in sorted(raw.items()):
+        if not isinstance(values, dict) or code not in values:
+            continue
+        try:
+            value = float(values[code])
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            series.append((str(day), value))
+    return series
+
+
+def fetch_ecb_history(source: str, target: str, days: int = 30) -> list[tuple[str, float]]:
+    """Descarcă evoluția cursului `source` → `target` din ultimele `days` zile."""
+    end = date.today()
+    start = end - timedelta(days=days)
+    response = requests.get(
+        f"{ECB_TIMESERIES_URL}/{start.isoformat()}..{end.isoformat()}",
+        params={"from": source.upper(), "to": target.upper()},
+        timeout=REQUEST_TIMEOUT,
+        headers=_HEADERS,
+    )
+    response.raise_for_status()
+    return parse_ecb_history(response.json(), target)

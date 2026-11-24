@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from rates import parse_bnr_xml, parse_ecb_payload
+from rates import parse_bnr_history, parse_bnr_xml, parse_ecb_history, parse_ecb_payload
 
 BNR_SAMPLE = """<?xml version="1.0" encoding="utf-8"?>
 <DataSet xmlns="https://www.bnr.ro/xsd">
@@ -41,6 +41,23 @@ class BnrTests(unittest.TestCase):
     def test_unknown_currency(self) -> None:
         with self.assertRaises(ValueError):
             self.table.convert(10, "XYZ", "RON")
+
+
+class HistoryTests(unittest.TestCase):
+    def test_bnr_history_sorted_and_multiplier(self) -> None:
+        payload = """<?xml version="1.0" encoding="utf-8"?>
+        <DataSet xmlns="https://www.bnr.ro/xsd"><Body>
+          <Cube date="2026-11-24"><Rate currency="EUR">5.3427</Rate><Rate currency="HUF" multiplier="100">1.4457</Rate></Cube>
+          <Cube date="2026-11-23"><Rate currency="EUR">5.3483</Rate><Rate currency="HUF" multiplier="100">1.4470</Rate></Cube>
+        </Body></DataSet>"""
+        tables = parse_bnr_history(payload)
+        self.assertEqual([t.date for t in tables], ["2026-11-23", "2026-11-24"])
+        self.assertAlmostEqual(tables[0].base_per_unit("EUR"), 5.3483)
+        self.assertAlmostEqual(tables[1].base_per_unit("HUF"), 0.014457)
+
+    def test_ecb_history(self) -> None:
+        data = {"rates": {"2026-11-23": {"RON": 5.3483}, "2026-11-24": {"RON": 5.3442, "USD": 1.16}}}
+        self.assertEqual(parse_ecb_history(data, "RON"), [("2026-11-23", 5.3483), ("2026-11-24", 5.3442)])
 
 
 class EcbTests(unittest.TestCase):

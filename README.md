@@ -12,6 +12,11 @@ Nu este necesară nicio cheie API. Cursurile se reîmprospătează la fiecare or
 pentru a nu supraîncărca serverul BNR. BNR publică cursul nou după ora 13:00, în zilele bancare.
 Dacă o sursă nu răspunde, aplicația trece automat pe cealaltă.
 
+Interfața este un dashboard în tema dark: tab-uri BNR/BCE, card mare cu rezultatul conversiei,
+grafic cu evoluția reală a cursului și listă de cursuri populare cu steaguri. Pentru grafic se
+folosesc fișierele oficiale BNR `https://curs.bnr.ro/nbrfxrates10days.xml` (ultimele 10 zile
+bancare) și seria temporală Frankfurter (ultima lună, date BCE). Nu sunt afișate date fictive.
+
 ## Rulare locală
 
 ```powershell
